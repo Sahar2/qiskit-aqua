@@ -1,27 +1,19 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018 IBM.
+# This code is part of Qiskit.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# (C) Copyright IBM 2018, 2019.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
-from scipy import linalg
-import numpy as np
-
-from qiskit import QuantumRegister, QuantumCircuit
-from qiskit.qasm import pi
-
-from qiskit.aqua.components.iqfts import IQFT
+from qiskit.aqua.circuits import FourierTransformCircuits as ftc
+from . import IQFT
 
 
 class Approximate(IQFT):
@@ -51,26 +43,14 @@ class Approximate(IQFT):
         self._num_qubits = num_qubits
         self._degree = degree
 
-    def construct_circuit(self, mode, register=None, circuit=None):
-        if mode == 'vector':
-            return linalg.dft(2 ** self._num_qubits, scale='sqrtn')
-        elif mode == 'circuit':
-            if register is None:
-                register = QuantumRegister(self._num_qubits, name='q')
-            if circuit is None:
-                circuit = QuantumCircuit(register)
+    def _build_circuit(self, qubits=None, circuit=None, do_swaps=True):
+        return ftc.construct_circuit(
+            circuit=circuit,
+            qubits=qubits,
+            inverse=True,
+            approximation_degree=self._degree,
+            do_swaps=do_swaps
+        )
 
-            for j in reversed(range(self._num_qubits)):
-                circuit.u2(0, np.pi, register[j])
-                # neighbor_range = range(np.max([0, j - self._degree + 1]), j)
-                neighbor_range = range(np.max([0, j - self._num_qubits + self._degree + 1]), j)
-                for k in reversed(neighbor_range):
-                    lam = -1.0 * pi / float(2 ** (j - k))
-                    circuit.u1(lam / 2, register[j])
-                    circuit.cx(register[j], register[k])
-                    circuit.u1(-lam / 2, register[k])
-                    circuit.cx(register[j], register[k])
-                    circuit.u1(lam / 2, register[k])
-            return circuit
-        else:
-            raise ValueError('Mode should be either "vector" or "circuit"')
+    def _build_matrix(self):
+        raise NotImplementedError

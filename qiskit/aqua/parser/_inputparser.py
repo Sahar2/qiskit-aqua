@@ -1,19 +1,16 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018 IBM.
+# This code is part of Qiskit.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# (C) Copyright IBM 2018, 2019.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
 from .base_parser import BaseParser
 import json
@@ -25,7 +22,7 @@ from qiskit.aqua import (local_pluggables_types,
                          get_pluggable_configuration,
                          local_pluggables)
 from qiskit.aqua.aqua_error import AquaError
-from .jsonschema import JSONSchema
+from .json_schema import JSONSchema
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +59,7 @@ class InputParser(BaseParser):
             with open(self._filename) as json_file:
                 self._sections = json.load(json_file)
 
-        self.json_schema.update_backend_schema()
+        self.json_schema.update_backend_schema(self)
         self.json_schema.update_pluggable_schemas(self)
         self._update_algorithm_input_schema()
         self._sections = self._order_sections(self._sections)
@@ -77,7 +74,7 @@ class InputParser(BaseParser):
             if JSONSchema.PROBLEM not in section_names:
                 self.set_section(JSONSchema.PROBLEM)
 
-        self.json_schema.update_backend_schema()
+        self.json_schema.update_backend_schema(self)
         self.json_schema.update_pluggable_schemas(self)
         self._update_algorithm_input_schema()
         self._merge_dependencies()
@@ -142,15 +139,16 @@ class InputParser(BaseParser):
             section_name = JSONSchema.format_section_name(section_name).lower()
             if PluggableType.INPUT.value == section_name:
                 self._update_algorithm_input_schema()
-                # remove properties that are not valid for this section
-                default_properties = self.get_section_default_properties(section_name)
-                if isinstance(default_properties, dict):
-                    properties = self.get_section_properties(section_name)
-                    for property_name in list(properties.keys()):
-                        if property_name != JSONSchema.NAME and property_name not in default_properties:
-                            self.delete_section_property(section_name, property_name)
             elif JSONSchema.PROBLEM == section_name:
                 self._update_input_problem()
+                self._update_algorithm_input_schema()
+                # remove properties that are not valid for this input
+                default_properties = self.get_section_default_properties(PluggableType.INPUT.value)
+                if isinstance(default_properties, dict):
+                    properties = self.get_section_properties(PluggableType.INPUT.value)
+                    for p_name in list(properties.keys()):
+                        if p_name != JSONSchema.NAME and p_name not in default_properties:
+                            self.delete_section_property(PluggableType.INPUT.value, p_name)
 
     @staticmethod
     def get_input_problems(input_name):
@@ -191,7 +189,7 @@ class InputParser(BaseParser):
         config = {}
         try:
             config = get_pluggable_configuration(PluggableType.INPUT, input_name)
-        except:
+        except Exception:
             pass
 
         input_schema = config['input_schema'] if 'input_schema' in config else {}
@@ -246,4 +244,3 @@ class InputParser(BaseParser):
 
         # no input solve this problem, remove section
         self.delete_section(PluggableType.INPUT.value)
-    

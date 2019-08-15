@@ -1,31 +1,23 @@
-# Copyright 2018, IBM.
+# This code is part of Qiskit.
 #
-# This source code is licensed under the Apache License, Version 2.0 found in
-# the LICENSE.txt file in the root directory of this source tree.
+# (C) Copyright IBM 2018, 2019.
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
-.PHONY: env doc
 
-# Dependencies need to be installed on the Anaconda virtual environment.
-env:
-	if test $(findstring QISKitenv, $(shell conda info --envs)); then \
-		bash -c "source activate QISKitenv;pip install -r requirements.txt"; \
-	else \
-		conda create -y -n QISKitenv python=3; \
-		bash -c "source activate QISKitenv;pip install -r requirements.txt"; \
-	fi;
+.PHONY: lint style test
 
-doc:
-	# create Qiskit Chemistry docs
-	make -C ../qiskit-chemistry/docs clean
-	sphinx-apidoc -f -o ../qiskit-chemistry/docs ../qiskit-chemistry
-	make -C ../qiskit-chemistry/docs html
-	# create Aqua docs
-	make -C docs clean
-	sphinx-apidoc -f -o docs .
-	make -C docs html
+lint:
+	pylint -rn --errors-only --enable=invalid-file-header --ignore=gauopen qiskit/aqua qiskit/chemistry test
 
-clean: 
-	# clean Qiskit Chemistry docs
-	make -C ../qiskit-chemistry/docs clean
-	# clean Qiskit Aqua docs
-	make -C docs clean
+style:
+	pycodestyle --max-line-length=210 --exclude=gauopen qiskit/aqua qiskit/chemistry test
+
+test:
+	python -m unittest discover -v test

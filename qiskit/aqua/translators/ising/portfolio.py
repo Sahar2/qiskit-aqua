@@ -1,30 +1,26 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018 IBM.
+# This code is part of Qiskit.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# (C) Copyright IBM 2018, 2019.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
 # Convert portfolio optimization instances into Pauli list
 
 from collections import OrderedDict
 
 import numpy as np
+from sklearn.datasets import make_spd_matrix
 from qiskit.quantum_info import Pauli
 
-from qiskit.aqua import Operator
-
-from sklearn.datasets import make_spd_matrix
+from qiskit.aqua.operators import WeightedPauliOperator
 
 
 def random_model(n, seed=None):
@@ -59,7 +55,7 @@ def get_portfolio_qubitops(mu, sigma, q, budget, penalty):
     E = np.matmul(np.asmatrix(e).T, np.asmatrix(e))
 
     # map problem to Ising model
-    offset = - np.dot(mu, e)/2 + penalty*budget**2 - budget*n*penalty + n**2*penalty/4 + q/4*np.dot(e, np.dot(sigma, e))
+    offset = -1*np.dot(mu, e)/2 + penalty*budget**2 - budget*n*penalty + n**2*penalty/4 + q/4*np.dot(e, np.dot(sigma, e))
     mu_z = mu/2 + budget*penalty*e - n*penalty/2*e - q/2*np.dot(sigma, e)
     sigma_z = penalty/4*E + q/4*sigma
 
@@ -84,7 +80,7 @@ def get_portfolio_qubitops(mu, sigma, q, budget, penalty):
                 pauli_list.append([2*sigma_z[i_, j_], Pauli(zp, xp)])
         offset += sigma_z[i_, i_]
 
-    return Operator(paulis=pauli_list), offset
+    return WeightedPauliOperator(paulis=pauli_list), offset
 
 
 def portfolio_value(x, mu, sigma, q, budget, penalty):

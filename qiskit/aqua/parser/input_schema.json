@@ -14,9 +14,19 @@
                     "type": ["integer", "null"],
                     "default": null
                 },
+                "num_processes": {
+                    "type": ["integer", "null"],
+                    "default": null,
+                    "minimum": 1
+                },
                 "circuit_caching": {
                     "type": "boolean",
                     "default": false
+                },
+                "circuit_optimization_level": {
+                    "type": ["integer", "string"],
+                    "enum": [0, 1, 2, 3, "default"],
+                    "default": "default"
                 },
                 "skip_qobj_deepcopy": {
                     "type": "boolean",
@@ -28,7 +38,19 @@
                 },
                 "skip_qobj_validation": {
                     "type": "boolean",
+                    "default": true
+                },
+                "measurement_error_mitigation": {
+                    "type": "boolean",
                     "default": false
+                },
+                "measurement_error_mitigation_shots": {
+                    "type": ["integer", "null"],
+                    "default": null
+                },
+                "measurement_error_mitigation_refresh_period": {
+                    "type": "integer",
+                    "default": 30
                 }
             },
             "required": ["name"],
@@ -55,44 +77,9 @@
                 "name": {
                     "type": "string",
                     "default": "statevector_simulator"
-                },
-                "shots": {
-                    "type": "integer",
-                    "default": 1024,
-                    "minimum": 1
-                },
-                "skip_transpiler": {
-                    "type": "boolean",
-                    "default": false
-                },
-                "coupling_map": {
-                    "type": ["array", "null"],
-                    "default": null
-                },
-                "basis_gates": {
-                    "type": ["string", "null"],
-                    "default": null
-                },
-                "initial_layout": {
-                    "type": ["object", "null"],
-                    "default": null
-                },
-                "max_credits": {
-                    "type": "integer",
-                    "default": 10,
-                    "minimum": 1
-                },
-                "timeout": {
-                    "type": ["number", "null"],
-                    "default": null
-                },
-                "wait": {
-                    "type": "number",
-                    "default": 5.0,
-                    "minimum": 0.0
                 }
             },
-            "required": ["name"],
+            "required": ["provider", "name"],
             "additionalProperties": false
         }
     },

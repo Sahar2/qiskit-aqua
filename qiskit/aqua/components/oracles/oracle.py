@@ -1,24 +1,23 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018 IBM.
+# This code is part of Qiskit.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# (C) Copyright IBM 2018, 2019.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 """
 This module contains the definition of a base class for Oracle.
 """
-from qiskit.aqua import Pluggable
+
 from abc import abstractmethod
+
+from qiskit.aqua import Pluggable
 
 
 class Oracle(Pluggable):
@@ -34,15 +33,27 @@ class Oracle(Pluggable):
             configuration (dict): configuration dictionary
     """
 
+    CONFIGURATION = {}
+
     @abstractmethod
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         super().__init__()
+        self._output_register = None
+        self._variable_register = None
+        self._ancillary_register = None
+        self._circuit = None
 
     @classmethod
     def init_params(cls, params):
         oracle_params = params.get(Pluggable.SECTION_KEY_ORACLE)
         args = {k: v for k, v in oracle_params.items() if k != 'name'}
         return cls(**args)
+
+    @property
+    def circuit(self):
+        if self._circuit is None:
+            self._circuit = self.construct_circuit()
+        return self._circuit
 
     @property
     @abstractmethod
@@ -56,7 +67,7 @@ class Oracle(Pluggable):
 
     @property
     @abstractmethod
-    def outcome_register(self):
+    def output_register(self):
         raise NotImplementedError()
 
     @abstractmethod
@@ -67,18 +78,3 @@ class Oracle(Pluggable):
             A quantum circuit for the oracle.
         """
         raise NotImplementedError()
-
-    @abstractmethod
-    def evaluate_classically(self, assignment):
-        """For an assignment, check the oracle result (True|False) classically
-        Args:
-            assignment (list of bools) : a particular variable assignment
-
-        Returns:
-            The True|False value of the oracle under the given assignment
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def interpret_measurement(self, *args, **kwargs):
-        raise NotImplementedError

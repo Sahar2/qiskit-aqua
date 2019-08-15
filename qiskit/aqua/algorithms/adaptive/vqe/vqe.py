@@ -1,40 +1,34 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018 IBM.
+# This code is part of Qiskit.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# (C) Copyright IBM 2018, 2019.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
-"""
-The Variational Quantum Eigensolver algorithm.
-See https://arxiv.org/abs/1304.3061
-"""
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
-import time
 import logging
 import functools
+import warnings
 
 import numpy as np
 from qiskit import ClassicalRegister, QuantumCircuit
 
-from qiskit.aqua.algorithms import QuantumAlgorithm
-from qiskit.aqua import AquaError, Pluggable, PluggableType, get_pluggable_class
-from qiskit.aqua.utils import find_regs_by_name
-from qiskit.aqua.utils.backend_utils import is_aer_statevector_backend
+from qiskit.aqua.algorithms.adaptive.vq_algorithm import VQAlgorithm
+from qiskit.aqua import AquaError, Pluggable, PluggableType, get_pluggable_class, Operator
+from qiskit.aqua.operators import (TPBGroupedWeightedPauliOperator, WeightedPauliOperator,
+                                   MatrixOperator, op_converter)
+from qiskit.aqua.utils.backend_utils import is_aer_statevector_backend, is_statevector_backend
 
 logger = logging.getLogger(__name__)
 
 
-class VQE(QuantumAlgorithm):
+class VQE(VQAlgorithm):
     """
     The Variational Quantum Eigensolver algorithm.
 
@@ -50,11 +44,9 @@ class VQE(QuantumAlgorithm):
             'type': 'object',
             'properties': {
                 'operator_mode': {
-                    'type': 'string',
-                    'default': 'matrix',
-                    'oneOf': [
-                        {'enum': ['matrix', 'paulis', 'grouped_paulis']}
-                    ]
+                    'type': ['string', 'null'],
+                    'default': None,
+                    'enum': ['matrix', 'paulis', 'grouped_paulis', None]
                 },
                 'initial_point': {
                     'type': ['array', 'null'],
@@ -63,9 +55,9 @@ class VQE(QuantumAlgorithm):
                     },
                     'default': None
                 },
-                'batch_mode': {
-                    'type': 'boolean',
-                    'default': False
+                'max_evals_grouped': {
+                    'type': 'integer',
+                    'default': 1
                 }
             },
             'additionalProperties': False
@@ -85,42 +77,58 @@ class VQE(QuantumAlgorithm):
         ],
     }
 
-    def __init__(self, operator, var_form, optimizer, operator_mode='matrix',
-                 initial_point=None, batch_mode=False, aux_operators=None, callback=None):
+    def __init__(self, operator, var_form, optimizer, operator_mode=None,
+                 initial_point=None, max_evals_grouped=1, aux_operators=None, callback=None,
+                 auto_conversion=True):
         """Constructor.
 
         Args:
-            operator (Operator): Qubit operator
+            operator (BaseOperator): Qubit operator
             operator_mode (str): operator mode, used for eval of operator
             var_form (VariationalForm): parametrized variational form.
             optimizer (Optimizer): the classical optimization algorithm.
             initial_point (numpy.ndarray): optimizer initial point.
-            batch_mode (bool): evaluate parameter sets in parallel.
-            aux_operators (list of Operator): Auxiliary operators to be evaluated at each eigenvalue
+            max_evals_grouped (int): max number of evaluations performed simultaneously
+            aux_operators (list[BaseOperator]): Auxiliary operators to be evaluated at each eigenvalue
             callback (Callable): a callback that can access the intermediate data during the optimization.
                                  Internally, four arguments are provided as follows
                                  the index of evaluation, parameters of variational form,
                                  evaluated mean, evaluated standard devation.
+            auto_conversion (bool): an automatic conversion for operator and aux_operators into the type which is
+                                    most suitable for the backend.
+                                    - non-aer statevector_simulator: MatrixOperator
+                                    - aer statevector_simulator: WeightedPauliOperator
+                                    - qasm simulator or real backend: TPBGroupedWeightedPauliOperator
         """
+        if operator_mode is not None:
+            warnings.warn("operator_mode option is deprecated and it will be removed after 0.6. "
+                          "Now the operator has its own mode, no need extra info to tell the VQE.", DeprecationWarning)
         self.validate(locals())
-        super().__init__()
-        self._operator = operator
-        self._var_form = var_form
-        self._optimizer = optimizer
-        self._operator_mode = operator_mode
-        self._initial_point = initial_point
+        super().__init__(var_form=var_form,
+                         optimizer=optimizer,
+                         cost_fn=self._energy_evaluation,
+                         initial_point=initial_point)
+        self._optimizer.set_max_evals_grouped(max_evals_grouped)
+        self._callback = callback
         if initial_point is None:
             self._initial_point = var_form.preferred_init_points
-        self._optimizer.set_batch_mode(batch_mode)
-        if aux_operators is None:
-            self._aux_operators = []
-        else:
-            self._aux_operators = [aux_operators] if not isinstance(aux_operators, list) else aux_operators
-        self._ret = {}
+        if isinstance(operator, Operator):
+            warnings.warn("operator should be type of BaseOperator, Operator type is deprecated and "
+                          "it will be removed after 0.6.", DeprecationWarning)
+            operator = op_converter.to_weighted_pauli_operator(operator)
+        self._operator = operator
         self._eval_count = 0
-        self._eval_time = 0
-        self._callback = callback
-        logger.info(self.print_setting())
+        self._aux_operators = []
+        if aux_operators is not None:
+            aux_operators = [aux_operators] if not isinstance(aux_operators, list) else aux_operators
+            for aux_op in aux_operators:
+                if isinstance(aux_op, Operator):
+                    warnings.warn("aux operator should be type of BaseOperator, Operator type is deprecated and "
+                                  "it will be removed after 0.6.", DeprecationWarning)
+                    aux_op = op_converter.to_weighted_pauli_operator(aux_op)
+                self._aux_operators.append(aux_op)
+        self._auto_conversion = auto_conversion
+        logger.info(self.print_settings())
 
     @classmethod
     def init_params(cls, params, algo_input):
@@ -140,9 +148,8 @@ class VQE(QuantumAlgorithm):
         operator = algo_input.qubit_op
 
         vqe_params = params.get(Pluggable.SECTION_KEY_ALGORITHM)
-        operator_mode = vqe_params.get('operator_mode')
         initial_point = vqe_params.get('initial_point')
-        batch_mode = vqe_params.get('batch_mode')
+        max_evals_grouped = vqe_params.get('max_evals_grouped')
 
         # Set up variational form, we need to add computed num qubits
         # Pass all parameters so that Variational Form can create its dependents
@@ -156,8 +163,8 @@ class VQE(QuantumAlgorithm):
         optimizer = get_pluggable_class(PluggableType.OPTIMIZER,
                                         opt_params['name']).init_params(params)
 
-        return cls(operator, var_form, optimizer, operator_mode=operator_mode,
-                   initial_point=initial_point, batch_mode=batch_mode,
+        return cls(operator, var_form, optimizer,
+                   initial_point=initial_point, max_evals_grouped=max_evals_grouped,
                    aux_operators=algo_input.aux_ops)
 
     @property
@@ -174,7 +181,7 @@ class VQE(QuantumAlgorithm):
         ret += "{}".format(params)
         return ret
 
-    def print_setting(self):
+    def print_settings(self):
         """
         Preparing the setting of VQE into a string.
 
@@ -191,70 +198,77 @@ class VQE(QuantumAlgorithm):
         ret += "===============================================================\n"
         return ret
 
-    def construct_circuit(self, parameter, backend=None, use_simulator_operator_mode=False):
+    def _config_the_best_mode(self, operator, backend):
+
+        if not isinstance(operator, (WeightedPauliOperator, MatrixOperator, TPBGroupedWeightedPauliOperator)):
+            logger.debug("Unrecognized operator type, skip auto conversion.")
+            return operator
+
+        ret_op = operator
+        if not is_statevector_backend(backend):  # assume qasm, should use grouped paulis.
+            if isinstance(operator, (WeightedPauliOperator, MatrixOperator)):
+                logger.debug("When running with Qasm simulator, grouped pauli can save number of measurements. "
+                             "We convert the operator into grouped ones.")
+                ret_op = op_converter.to_tpb_grouped_weighted_pauli_operator(
+                    operator, TPBGroupedWeightedPauliOperator.sorted_grouping)
+        else:
+            if not is_aer_statevector_backend(backend):
+                if not isinstance(operator, MatrixOperator):
+                    logger.info("When running with non-Aer statevector simulator, represent operator as a matrix could "
+                                "achieve the better performance. We convert the operator to matrix.")
+                    ret_op = op_converter.to_matrix_operator(operator)
+            else:
+                if not isinstance(operator, WeightedPauliOperator):
+                    logger.info("When running with Aer statevector simulator, represent operator as weighted paulis could "
+                                "achieve the better performance. We convert the operator to weighted paulis.")
+                    ret_op = op_converter.to_weighted_pauli_operator(operator)
+        return ret_op
+
+    def construct_circuit(self, parameter, backend=None, use_simulator_operator_mode=False,
+                          statevector_mode=None, circuit_name_prefix=''):
         """Generate the circuits.
 
         Args:
-            parameters (numpy.ndarray): parameters for variational form.
-            backend (qiskit.BaseBackend): backend object.
-            use_simulator_operator_mode (bool): is backend from AerProvider, if True and mode is paulis,
+            parameter (numpy.ndarray): parameters for variational form.
+            backend (qiskit.BaseBackend, optional): backend object.
+            use_simulator_operator_mode (bool, optional): is backend from AerProvider, if True and mode is paulis,
                            single circuit is generated.
+            statevector_mode (bool, optional): indicate which type of simulator are going to use.
+            circuit_name_prefix (str, optional): a prefix of circuit name
 
         Returns:
             [QuantumCircuit]: the generated circuits with Hamiltonian.
         """
-        input_circuit = self._var_form.construct_circuit(parameter)
-        if backend is None:
-            warning_msg = "Circuits used in VQE depends on the backend type, "
-            from qiskit import BasicAer
-            if self._operator_mode == 'matrix':
-                temp_backend_name = 'statevector_simulator'
-            else:
-                temp_backend_name = 'qasm_simulator'
-            backend = BasicAer.get_backend(temp_backend_name)
-            warning_msg += "since operator_mode is '{}', '{}' backend is used.".format(
-                self._operator_mode, temp_backend_name)
-            logger.warning(warning_msg)
-        circuit = self._operator.construct_evaluation_circuit(self._operator_mode,
-                                                              input_circuit, backend, use_simulator_operator_mode)
-        return circuit
 
-    def _solve(self):
-        opt_params, opt_val = self.find_minimum_eigenvalue()
-        self._ret['eigvals'] = np.asarray([opt_val])
-        self._ret['opt_params'] = opt_params
-        qc = self._var_form.construct_circuit(self._ret['opt_params'])
-        if self._quantum_instance.is_statevector:
-            ret = self._quantum_instance.execute(qc)
-            self._ret['eigvecs'] = np.asarray([ret.get_statevector(qc)])
+        if backend is not None:
+            warnings.warn("backend option is deprecated and it will be removed after 0.6, "
+                          "Use `statevector_mode` instead", DeprecationWarning)
+            statevector_mode = is_statevector_backend(backend)
         else:
-            c = ClassicalRegister(self._operator.num_qubits, name='c')
-            q = find_regs_by_name(qc, 'q')
-            qc.add_register(c)
-            qc.barrier(q)
-            qc.measure(q, c)
-            ret = self._quantum_instance.execute(qc)
-            self._ret['eigvecs'] = np.asarray([ret.get_counts(qc)])
+            if statevector_mode is None:
+                raise AquaError("Either backend or statevector_mode need to be provided.")
 
-    def _get_ground_state_energy(self):
-        if 'eigvals' not in self._ret:
-            self._solve()
-        self._ret['energy'] = self._ret['eigvals'][0]
+        wave_function = self._var_form.construct_circuit(parameter)
+        circuits = self._operator.construct_evaluation_circuit(
+            use_simulator_operator_mode=use_simulator_operator_mode, wave_function=wave_function,
+            statevector_mode=statevector_mode, circuit_name_prefix=circuit_name_prefix)
+        return circuits
 
-    def _eval_aux_ops(self, threshold=1e-12):
-        if 'opt_params' not in self._ret:
-            self._get_ground_state_energy()
-        wavefn_circuit = self._var_form.construct_circuit(self._ret['opt_params'])
+    def _eval_aux_ops(self, threshold=1e-12, params=None):
+        if params is None:
+            params = self.optimal_params
+        wavefn_circuit = self._var_form.construct_circuit(params)
         circuits = []
         values = []
         params = []
-        for operator in self._aux_operators:
+        for idx, operator in enumerate(self._aux_operators):
             if not operator.is_empty():
                 temp_circuit = QuantumCircuit() + wavefn_circuit
-                circuit = operator.construct_evaluation_circuit(self._operator_mode, temp_circuit,
-                                                                self._quantum_instance.backend,
-                                                                self._use_simulator_operator_mode)
-                params.append(operator.aer_paulis)
+                circuit = operator.construct_evaluation_circuit(
+                    wave_function=temp_circuit, statevector_mode=self._quantum_instance.is_statevector,
+                    use_simulator_operator_mode=self._use_simulator_operator_mode, circuit_name_prefix=str(idx))
+                if self._use_simulator_operator_mode:
+                    params.append(operator.aer_paulis)
             else:
                 circuit = None
             circuits.append(circuit)
@@ -270,16 +284,19 @@ class VQE(QuantumAlgorithm):
                 extra_args = {}
             result = self._quantum_instance.execute(to_be_simulated_circuits, **extra_args)
 
-            for operator, circuit in zip(self._aux_operators, circuits):
-                if circuit is None:
+            for idx, operator in enumerate(self._aux_operators):
+                if operator.is_empty():
                     mean, std = 0.0, 0.0
                 else:
-                    mean, std = operator.evaluate_with_result(self._operator_mode,
-                                                              circuit, self._quantum_instance.backend,
-                                                              result, self._use_simulator_operator_mode)
+                    mean, std = operator.evaluate_with_result(
+                        result=result, statevector_mode=self._quantum_instance.is_statevector,
+                        use_simulator_operator_mode=self._use_simulator_operator_mode,
+                        circuit_name_prefix=str(idx))
+
                 mean = mean.real if abs(mean.real) > threshold else 0.0
                 std = std.real if abs(std.real) > threshold else 0.0
                 values.append((mean, std))
+
         if len(values) > 0:
             aux_op_vals = np.empty([1, len(self._aux_operators), 2])
             aux_op_vals[0, :] = np.asarray(values)
@@ -291,23 +308,43 @@ class VQE(QuantumAlgorithm):
 
         Returns:
             Dictionary of results
+
+        Raises:
+            AquaError: wrong setting of operator and backend.
         """
-        if not self._quantum_instance.is_statevector and self._operator_mode == 'matrix':
-            logger.warning('Qasm simulation does not work on {} mode, changing '
-                           'the operator_mode to "paulis"'.format(self._operator_mode))
-            self._operator_mode = 'paulis'
+        if self._auto_conversion:
+            self._operator = self._config_the_best_mode(self._operator, self._quantum_instance.backend)
+            for i in range(len(self._aux_operators)):
+                if not self._aux_operators[i].is_empty():
+                    self._aux_operators[i] = self._config_the_best_mode(self._aux_operators[i], self._quantum_instance.backend)
+
+        # sanity check
+        if isinstance(self._operator, MatrixOperator) and not self._quantum_instance.is_statevector:
+            raise AquaError("Non-statevector simulator can not work with `MatrixOperator`, either turn ON "
+                            "auto_conversion or use the proper combination between operator and backend.")
 
         self._use_simulator_operator_mode = \
             is_aer_statevector_backend(self._quantum_instance.backend) \
-            and self._operator_mode != 'matrix'
+            and isinstance(self._operator, (WeightedPauliOperator, TPBGroupedWeightedPauliOperator))
 
         self._quantum_instance.circuit_summary = True
+
         self._eval_count = 0
-        self._solve()
-        self._get_ground_state_energy()
-        self._eval_aux_ops()
+        self._ret = self.find_minimum(initial_point=self.initial_point,
+                                      var_form=self.var_form,
+                                      cost_fn=self._energy_evaluation,
+                                      optimizer=self.optimizer)
+        if self._ret['num_optimizer_evals'] is not None and self._eval_count >= self._ret['num_optimizer_evals']:
+            self._eval_count = self._ret['num_optimizer_evals']
+        self._eval_time = self._ret['eval_time']
+        logger.info('Optimization complete in {} seconds.\nFound opt_params {} in {} evals'.format(
+            self._eval_time, self._ret['opt_params'], self._eval_count))
         self._ret['eval_count'] = self._eval_count
-        self._ret['eval_time'] = self._eval_time
+
+        self._ret['energy'] = self.get_optimal_cost()
+        self._ret['eigvals'] = np.asarray([self.get_optimal_cost()])
+        self._ret['eigvecs'] = np.asarray([self.get_optimal_vector()])
+        self._eval_aux_ops()
         return self._ret
 
     # This is the objective function to be passed to the optimizer that is uses for evaluation
@@ -329,7 +366,9 @@ class VQE(QuantumAlgorithm):
 
         for idx in range(len(parameter_sets)):
             parameter = parameter_sets[idx]
-            circuit = self.construct_circuit(parameter, self._quantum_instance.backend, self._use_simulator_operator_mode)
+            circuit = self.construct_circuit(parameter, statevector_mode=self._quantum_instance.is_statevector,
+                                             use_simulator_operator_mode=self._use_simulator_operator_mode,
+                                             circuit_name_prefix=str(idx))
             circuits.append(circuit)
 
         to_be_simulated_circuits = functools.reduce(lambda x, y: x + y, circuits)
@@ -344,7 +383,8 @@ class VQE(QuantumAlgorithm):
 
         for idx in range(len(parameter_sets)):
             mean, std = self._operator.evaluate_with_result(
-                self._operator_mode, circuits[idx], self._quantum_instance.backend, result, self._use_simulator_operator_mode)
+                result=result, statevector_mode=self._quantum_instance.is_statevector,
+                use_simulator_operator_mode=self._use_simulator_operator_mode, circuit_name_prefix=str(idx))
             mean_energy.append(np.real(mean))
             std_energy.append(np.real(std))
             self._eval_count += 1
@@ -354,55 +394,40 @@ class VQE(QuantumAlgorithm):
 
         return mean_energy if len(mean_energy) > 1 else mean_energy[0]
 
-    def find_minimum_eigenvalue(self, initial_point=None):
-        """Determine minimum energy state.
+    def get_optimal_cost(self):
+        if 'opt_params' not in self._ret:
+            raise AquaError("Cannot return optimal cost before running the algorithm to find optimal params.")
+        return self._ret['min_val']
 
-        Args:
-            initial_point (numpy.ndarray[float]) : initial point, or None
-                if not provided.
+    def get_optimal_circuit(self):
+        if 'opt_params' not in self._ret:
+            raise AquaError("Cannot find optimal circuit before running the algorithm to find optimal params.")
+        return self._var_form.construct_circuit(self._ret['opt_params'])
 
-        Returns:
-            Optimized variational parameters, and corresponding minimum eigenvalue.
+    def get_optimal_vector(self):
+        from qiskit.aqua.utils.run_circuits import find_regs_by_name
 
-        Raises:
-            ValueError:
-
-        """
-        initial_point = initial_point if initial_point is not None else self._initial_point
-
-        nparms = self._var_form.num_parameters
-        bounds = self._var_form.parameter_bounds
-
-        if initial_point is not None and len(initial_point) != nparms:
-            raise ValueError('Initial point size {} and parameter size {} mismatch'.format(len(initial_point), nparms))
-        if len(bounds) != nparms:
-            raise ValueError('Variational form bounds size does not match parameter size')
-        # If *any* value is *equal* in bounds array to None then the problem does *not* have bounds
-        problem_has_bounds = not np.any(np.equal(bounds, None))
-        # Check capabilities of the optimizer
-        if problem_has_bounds:
-            if not self._optimizer.is_bounds_supported:
-                raise ValueError('Problem has bounds but optimizer does not support bounds')
+        if 'opt_params' not in self._ret:
+            raise AquaError("Cannot find optimal vector before running the algorithm to find optimal params.")
+        qc = self.get_optimal_circuit()
+        if self._quantum_instance.is_statevector:
+            ret = self._quantum_instance.execute(qc)
+            self._ret['min_vector'] = ret.get_statevector(qc)
         else:
-            if self._optimizer.is_bounds_required:
-                raise ValueError('Problem does not have bounds but optimizer requires bounds')
-        if initial_point is not None:
-            if not self._optimizer.is_initial_point_supported:
-                raise ValueError('Optimizer does not support initial point')
-        else:
-            if self._optimizer.is_initial_point_required:
-                low = [(l if l is not None else -2 * np.pi) for (l, u) in bounds]
-                high = [(u if u is not None else 2 * np.pi) for (l, u) in bounds]
-                initial_point = self.random.uniform(low, high)
+            c = ClassicalRegister(qc.width(), name='c')
+            q = find_regs_by_name(qc, 'q')
+            qc.add_register(c)
+            qc.barrier(q)
+            qc.measure(q, c)
+            tmp_cache = self._quantum_instance.circuit_cache
+            self._quantum_instance._circuit_cache = None
+            ret = self._quantum_instance.execute(qc)
+            self._quantum_instance._circuit_cache = tmp_cache
+            self._ret['min_vector'] = ret.get_counts(qc)
+        return self._ret['min_vector']
 
-        start = time.time()
-        logger.info('Starting optimizer bounds={}\ninitial point={}'.format(bounds, initial_point))
-        sol, opt, nfev = self._optimizer.optimize(self._var_form.num_parameters, self._energy_evaluation,
-                                                  variable_bounds=bounds, initial_point=initial_point)
-        if nfev is not None:
-            self._eval_count = self._eval_count if self._eval_count >= nfev else nfev
-        self._eval_time = time.time() - start
-        logger.info('Optimization complete in {}s found {} num evals {}'.format(
-            self._eval_time, opt, self._eval_count))
-
-        return sol, opt
+    @property
+    def optimal_params(self):
+        if 'opt_params' not in self._ret:
+            raise AquaError("Cannot find optimal params before running the algorithm.")
+        return self._ret['opt_params']
